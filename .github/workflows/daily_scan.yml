@@ -1,0 +1,40 @@
+name: Daily Stock Scan & Telegram Alert
+
+on:
+  schedule:
+    - cron: '30 3 * * *'   # 03:30 UTC = 09:00 IST, Monday–Friday implicit via market hours
+  workflow_dispatch:         # also triggerable manually from the GitHub Actions UI
+
+# Prevent a slow run from queuing another while still running
+concurrency:
+  group: daily-scan
+  cancel-in-progress: true
+
+# Least-privilege: this job only reads the repo and calls external APIs
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    name: Run screener and send Telegram alert
+    runs-on: ubuntu-latest
+    timeout-minutes: 45     # PE fetching for 500 tickers can take ~10–15 min
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'          # caches the pip download cache between runs
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run daily scan and send Telegram alert
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python notify_telegram.py
