@@ -50,18 +50,26 @@ _MAX_MSG = 4096
 # ── Telegram layer ────────────────────────────────────────────────────────────
 
 def send_telegram(token: str, chat_id: str, text: str) -> None:
-    """POST a single message to Telegram using HTML parse mode."""
+    """POST a plain-text message to Telegram.
+
+    No parse_mode — avoids 400 errors from HTML/Markdown special characters
+    in ticker symbols or numeric values.  Logs Telegram's error body on failure
+    so the exact reason is visible in GitHub Actions logs.
+    """
     url  = _TG_API.format(token=token)
     resp = requests.post(
         url,
         json={
             "chat_id":                  chat_id,
             "text":                     text,
-            "parse_mode":               "HTML",
             "disable_web_page_preview": True,
         },
         timeout=15,
     )
+    if not resp.ok:
+        raise RuntimeError(
+            f"Telegram API error {resp.status_code}: {resp.text}"
+        )
     resp.raise_for_status()
 
 
@@ -83,71 +91,67 @@ def run_market(ticker_fn) -> tuple[pd.DataFrame, dict]:
 
 # ── Formatter layer ───────────────────────────────────────────────────────────
 
-def _h(value: object) -> str:
-    """Escape HTML special characters for Telegram's HTML parse mode."""
-    return str(value).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
-
 def format_message(market: str, picks: pd.DataFrame, bt: dict) -> str:
     """
-    Build a compact, mobile-readable HTML message.
+    Build a plain-text message — no HTML, no Markdown.
+
+    Plain text is the safest Telegram format: no parser, no escaping rules,
+    no 400 errors from special characters in ticker names or numeric values.
 
     Structure:
-      [Header]   market name, timestamp, active filter thresholds
-      [Backtest] portfolio win rate, avg return, max drawdown, trade count
-      [Picks]    top-N ranked stocks, one line each
-      [Footer]   bot attribution
+      Header    — market, timestamp, active thresholds
+      Backtest  — win rate, avg return, max drawdown, trade count
+      Picks     — top-N stocks, one line each
+      Footer
     """
-    ts  = datetime.now(timezone.utc).strftime("%d %b %Y · %H:%M UTC")
+    ts  = datetime.now(timezone.utc).strftime("%d %b %Y  %H:%M UTC")
     cfg = CONFIG
+    div = "─" * 32
 
     lines: list[str] = [
-        f"📊 <b>Daily Quant Scan — {_h(market)}</b>",
-        f"<i>{ts}</i>",
-        f"<i>PE &lt; {cfg.max_pe:.0f}  ·  RSI &gt; {cfg.min_rsi:.0f}"
-        f"  ·  Vol ≥ {cfg.vol_spike_mult:.1f}×</i>",
-        "",
+        f"📊 Daily Quant Scan — {market}",
+        ts,
+        f"PE < {cfg.max_pe:.0f}  |  RSI > {cfg.min_rsi:.0f}  |  Vol >= {cfg.vol_spike_mult:.1f}x",
+        div,
     ]
 
     # ── Backtest summary ──────────────────────────────────────────────────────
     if bt:
         sign = "+" if bt["avg_fwd_return"] >= 0 else ""
         lines += [
-            f"<b>📈 Signal Backtest ({FWD_DAYS}-day return)</b>",
-            f"  Win Rate    <code>{bt['win_rate']:.1f}%</code>",
-            f"  Avg Return  <code>{sign}{bt['avg_fwd_return']:.2f}%</code>",
-            f"  Max Drawdown <code>{bt['max_drawdown']:.1f}%</code>",
-            f"  Trades      <code>{bt['total_trades']}</code>",
-            "",
+            f"📈 Backtest ({FWD_DAYS}-day return)",
+            f"  Win Rate     {bt['win_rate']:.1f}%",
+            f"  Avg Return   {sign}{bt['avg_fwd_return']:.2f}%",
+            f"  Max Drawdown {bt['max_drawdown']:.1f}%",
+            f"  Trades       {bt['total_trades']}",
+            div,
         ]
     else:
-        lines += ["<i>Backtest skipped — insufficient history.</i>", ""]
+        lines += ["Backtest skipped — insufficient history.", div]
 
     # ── Top picks ─────────────────────────────────────────────────────────────
     if picks.empty:
-        lines.append("❌ <i>No stocks passed all three filters today.</i>")
+        lines.append("No stocks passed all three filters today.")
     else:
         top = picks.reset_index().head(TOP_N)
-        lines.append(f"<b>🏆 Top {len(top)} Picks</b>")
+        lines.append(f"🏆 Top {len(top)} Picks")
         for _, row in top.iterrows():
-            pe_str    = f"PE {row['PE Ratio']:.0f}" if pd.notna(row.get("PE Ratio")) else "PE —"
-            score_str = f"{row['Quant Score']:.0f}"
+            pe_str = f"PE {row['PE Ratio']:.0f}" if pd.notna(row.get("PE Ratio")) else "PE n/a"
             lines.append(
-                f"  <b>{_h(row['Ticker'])}</b>"
-                f"  {row['Close']:.2f}"
-                f"  RSI {row['RSI(14)']:.0f}"
-                f"  Vol {row['Vol Ratio']:.1f}×"
+                f"  {row['Ticker']:<10}"
+                f"  {row['Close']:>8.2f}"
+                f"  RSI {row['RSI(14)']:>5.1f}"
+                f"  Vol {row['Vol Ratio']:>4.1f}x"
                 f"  {pe_str}"
-                f"  ⭐{score_str}"
+                f"  Score {row['Quant Score']:.0f}"
             )
 
-    lines += ["", "<i>🤖 Nifty Quant Screener — automated daily run</i>"]
+    lines += [div, "Nifty Quant Screener — automated daily run"]
 
     msg = "\n".join(lines)
 
-    # Telegram hard limit is 4 096 characters
     if len(msg) > _MAX_MSG:
-        msg = msg[: _MAX_MSG - 40] + "\n…\n<i>(message truncated)</i>"
+        msg = msg[: _MAX_MSG - 20] + "\n...(truncated)"
 
     return msg
 
