@@ -27,16 +27,31 @@ def _vol_sma_ratio_series(volume: pd.Series, window: int = 20) -> pd.Series:
     return volume / sma
 
 
+def _sma_series(close: pd.Series, window: int = 200) -> pd.Series:
+    """Simple Moving Average — NaN until *window* bars are available."""
+    return close.rolling(window=window, min_periods=window).mean()
+
+
+def _vol_trend_series(volume: pd.Series, short: int = 5, long: int = 20) -> pd.Series:
+    """True when short-window avg volume exceeds long-window avg volume."""
+    vol_short = volume.rolling(window=short, min_periods=short).mean()
+    vol_long  = volume.rolling(window=long,  min_periods=long).mean()
+    return vol_short > vol_long
+
+
 # ── config ────────────────────────────────────────────────────────────────────
 
 @dataclass
 class ScreenerConfig:
-    rsi_window:     int   = 14
-    vol_sma_window: int   = 20
-    max_pe:         float = 20.0
-    min_rsi:        float = 50.0
-    vol_spike_mult: float = 2.0
-    pe_workers:     int   = 8
+    rsi_window:       int   = 14
+    vol_sma_window:   int   = 20
+    sma_trend_window: int   = 200   # price > SMA-N to require long-term uptrend
+    vol_trend_short:  int   = 5     # short window for volume trend check
+    max_pe:           float = 20.0
+    min_pe:           float = 0.0   # exclude negative / zero PE (unprofitable)
+    min_rsi:          float = 50.0
+    vol_spike_mult:   float = 2.0
+    pe_workers:       int   = 8
 
 
 # ── backtest ──────────────────────────────────────────────────────────────────
@@ -71,18 +86,30 @@ class Backtester:
         Detect all past signal bars in *df* and return their fwd_days-forward returns.
 
         Returns None when there are too few bars or no signal ever fired.
+        Signal conditions mirror Screener.filter_stocks() exactly.
         """
-        min_bars = self.cfg.rsi_window + self.cfg.vol_sma_window + fwd_days
+        min_bars = max(
+            self.cfg.rsi_window + self.cfg.vol_sma_window,
+            self.cfg.sma_trend_window,
+            self.cfg.vol_trend_short,
+        ) + fwd_days
         if len(df) < min_bars:
             return None
 
         close  = df["Close"].astype(float)
         volume = df["Volume"].astype(float)
 
-        rsi_s = _wilder_rsi_series(close, self.cfg.rsi_window)
-        vol_s = _vol_sma_ratio_series(volume, self.cfg.vol_sma_window)
+        rsi_s       = _wilder_rsi_series(close, self.cfg.rsi_window)
+        vol_s       = _vol_sma_ratio_series(volume, self.cfg.vol_sma_window)
+        sma200_s    = _sma_series(close, self.cfg.sma_trend_window)
+        vol_trend_s = _vol_trend_series(volume, self.cfg.vol_trend_short, self.cfg.vol_sma_window)
 
-        signal = (rsi_s > self.cfg.min_rsi) & (vol_s >= self.cfg.vol_spike_mult)
+        signal = (
+            (rsi_s > self.cfg.min_rsi) &
+            (vol_s >= self.cfg.vol_spike_mult) &
+            (close > sma200_s) &
+            vol_trend_s
+        )
         # Mask out the last fwd_days bars: forward close is not yet available
         signal.iloc[-fwd_days:] = False
 
@@ -233,15 +260,24 @@ class Screener:
         return out
 
     def _score_ohlcv(self, ticker: str, df: pd.DataFrame) -> dict | None:
-        if len(df) < self.cfg.rsi_window + self.cfg.vol_sma_window:
+        min_bars = max(
+            self.cfg.rsi_window + self.cfg.vol_sma_window,
+            self.cfg.sma_trend_window,
+            self.cfg.vol_trend_short,
+        )
+        if len(df) < min_bars:
             return None
         close  = df["Close"].astype(float)
         volume = df["Volume"].astype(float)
+        sma200 = _sma_series(close, self.cfg.sma_trend_window)
+        last_sma = sma200.iloc[-1]
         return {
-            "Ticker":    ticker,
-            "Close":     round(float(close.iloc[-1]), 2),
-            "RSI(14)":   round(self._rsi(close), 1),
-            "Vol Ratio": round(self._vol_ratio(volume), 2),
+            "Ticker":       ticker,
+            "Close":        round(float(close.iloc[-1]), 2),
+            "RSI(14)":      round(self._rsi(close), 1),
+            "Vol Ratio":    round(self._vol_ratio(volume), 2),
+            "Above SMA200": bool(pd.notna(last_sma) and close.iloc[-1] > last_sma),
+            "Vol Trend Up": bool(_vol_trend_series(volume, self.cfg.vol_trend_short, self.cfg.vol_sma_window).iloc[-1]),
         }
 
     def filter_stocks(
@@ -269,8 +305,10 @@ class Screener:
 
         scored = pd.DataFrame(rows)
         rsi_vol_mask = (
-            (scored["RSI(14)"]   > self.cfg.min_rsi) &
-            (scored["Vol Ratio"] >= self.cfg.vol_spike_mult)
+            (scored["RSI(14)"]      > self.cfg.min_rsi) &
+            (scored["Vol Ratio"]    >= self.cfg.vol_spike_mult) &
+            (scored["Above SMA200"] == True) &
+            (scored["Vol Trend Up"] == True)
         )
         candidates = scored[rsi_vol_mask].copy()
         self.stats  = {"total": len(scored), "rsi_vol_pass": len(candidates), "final": 0}
@@ -284,16 +322,40 @@ class Screener:
         candidates["PE Ratio"] = candidates["Ticker"].map(pe_data)
         candidates = candidates[
             candidates["PE Ratio"].notna() &
+            (candidates["PE Ratio"] > self.cfg.min_pe) &
             (candidates["PE Ratio"] < self.cfg.max_pe)
         ].copy()
 
         if candidates.empty:
             return candidates
 
-        rsi_score = ((candidates["RSI(14)"] - 50) / 50 * 100).clip(0, 100)
-        vol_score = (candidates["Vol Ratio"] / self.cfg.vol_spike_mult * 50).clip(0, 100)
-        pe_score  = ((self.cfg.max_pe - candidates["PE Ratio"]) / self.cfg.max_pe * 100).clip(0, 100)
-        candidates["Quant Score"] = ((rsi_score + vol_score + pe_score) / 3).round(1)
+        # ── Weighted Quant Score: RSI 30% | Volume 40% | Value 30% ──────────────
+        _VOL_CAP = 5.0  # cap before scoring to neutralise illiquidity pumps
+
+        # RSI — trapezoid: ramp 0→100 over [50,55], hold 100 over [55,65],
+        #                   drop 100→0 over [65,75], zero above 75 (overbought)
+        rsi = candidates["RSI(14)"]
+        rsi_score = pd.Series(
+            np.where(rsi <= 55, (rsi - 50).clip(lower=0) / 5,
+            np.where(rsi <= 65, 1.0,
+            np.where(rsi <= 75, (75 - rsi) / 10,
+            0.0))) * 100,
+            index=rsi.index,
+        ).clip(0, 100)
+
+        # Volume — linear from min-threshold to cap, outliers clipped at 5×
+        vol      = candidates["Vol Ratio"].clip(upper=_VOL_CAP)
+        vol_band = max(float(_VOL_CAP - self.cfg.vol_spike_mult), 1e-9)
+        vol_score = ((vol - self.cfg.vol_spike_mult) / vol_band * 100).clip(0, 100)
+
+        # Value — linear: lower PE → higher score within [0, max_pe]
+        pe_score = ((self.cfg.max_pe - candidates["PE Ratio"]) / self.cfg.max_pe * 100).clip(0, 100)
+
+        candidates["Quant Score"] = (
+            0.30 * rsi_score +
+            0.40 * vol_score +
+            0.30 * pe_score
+        ).round(1)
 
         candidates = (
             candidates

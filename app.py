@@ -138,8 +138,9 @@ with tab1:
     else:
         st.subheader(f"{market}  ·  {screener.stats['final']} stocks matched")
         st.caption(
-            f"PE < {max_pe}  ·  RSI(14) > {min_rsi}  ·  "
-            f"Volume ≥ {vol_mult}× SMA-20  ·  Period: {period}"
+            f"0 < PE < {max_pe}  ·  RSI(14) > {min_rsi}  ·  "
+            f"Volume ≥ {vol_mult}× SMA-20  ·  Price > SMA-200  ·  "
+            f"Vol Trend Up  ·  Period: {period}"
         )
         st.dataframe(
             results.reset_index(),
@@ -177,7 +178,8 @@ with tab2:
 
     st.subheader("Portfolio-Level Statistics")
     st.caption(
-        f"All tickers where RSI(14) > {min_rsi} AND Volume ≥ {vol_mult}× SMA-20 fired historically.  "
+        f"Tickers where RSI(14) > {min_rsi}, Volume ≥ {vol_mult}× SMA-20, "
+        f"Price > SMA-200, and volume trending up — all fired historically.  "
         f"Each signal's {fwd_days}-day forward return is recorded.  "
         f"Equity curve: equal-weight daily basket, one unit of capital."
     )

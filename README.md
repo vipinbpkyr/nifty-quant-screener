@@ -90,14 +90,20 @@ All thresholds are adjustable from the Streamlit sidebar.
 
 ### Quant Score (0–100)
 
-Equal-weight composite of all three factors — used to rank final picks:
+Weighted composite — used to rank final picks:
+
+| Factor | Weight | Scoring curve |
+|---|---|---|
+| RSI | 30% | Trapezoid: 0→100 over RSI [50,55] · hold 100 over [55,65] · drop 100→0 over [65,75] · 0 above 75 |
+| Volume Ratio | 40% | Linear from threshold → 5× cap (outliers clipped to prevent pump distortion) |
+| Value (PE) | 30% | Linear: lower PE → higher score within [0, max_pe] |
 
 ```
-RSI Score   = (RSI - 50) / 50 × 100       clipped [0, 100]
-Volume Score = (Vol Ratio / multiplier) × 50  clipped [0, 100]
-Value Score  = (max_PE - PE) / max_PE × 100   clipped [0, 100]
+RSI Score    = trapezoid(RSI, peak=[55,65], zero_above=75)        clipped [0, 100]
+Volume Score = (min(Vol Ratio, 5×) − threshold) / (5 − threshold) × 100  clipped [0, 100]
+Value Score  = (max_PE − PE) / max_PE × 100                        clipped [0, 100]
 
-Quant Score = (RSI Score + Volume Score + Value Score) / 3
+Quant Score  = 0.30 × RSI Score + 0.40 × Volume Score + 0.30 × Value Score
 ```
 
 ### Backtester (`quant_logic.py — Backtester`)
