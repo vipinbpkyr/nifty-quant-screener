@@ -1,7 +1,8 @@
-yfinance>=0.2.31
-pandas>=2.0.0
-streamlit>=1.32.0
-ta>=0.11.0
-lxml>=4.9.0
-requests>=2.31.0
-plotly>=5.18.0
+numpy>=1.26.0,<3
+yfinance>=0.2.31,<1
+pandas>=2.0.0,<3
+streamlit>=1.32.0,<2
+ta>=0.11.0,<1
+lxml>=4.9.0,<6
+requests>=2.31.0,<3
+plotly>=5.18.0,<6

@@ -4,6 +4,7 @@ Quant logic — Screener and Backtester for the Value + Momentum + Volume framew
 import numpy as np
 import pandas as pd
 import yfinance as yf
+import ta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 
@@ -366,4 +367,81 @@ class Screener:
         candidates.index.name = "Rank"
         self.stats["final"]   = len(candidates)
 
-        return candidates
+        return c
+
+# ── Dashboard indicator suite (used by dashboard.py chart explorer) ───────────
+# Consolidated here from the former quant_engine.py to eliminate the duplicate
+# module. Uses the `ta` library for the full indicator set (EMA, MACD, BB, ATR,
+# Stochastic, OBV, VWAP) which is richer than the screener's lean inline maths.
+
+def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
+    """Add a standard set of technical indicators to *df* and return a new DataFrame."""
+    df     = df.copy()
+    close  = df["Close"]
+    high   = df["High"]
+    low    = df["Low"]
+    volume = df["Volume"]
+
+    # Trend
+    df["EMA_20"]      = ta.trend.ema_indicator(close, window=20)
+    df["EMA_50"]      = ta.trend.ema_indicator(close, window=50)
+    df["SMA_200"]     = ta.trend.sma_indicator(close, window=200)
+    df["MACD"]        = ta.trend.macd(close)
+    df["MACD_Signal"] = ta.trend.macd_signal(close)
+    df["MACD_Hist"]   = ta.trend.macd_diff(close)
+
+    # Momentum
+    df["RSI"] = ta.momentum.rsi(close, window=14)
+    stoch = ta.momentum.StochasticOscillator(high, low, close, window=14, smooth_window=3)
+    df["Stoch_K"] = stoch.stoch()
+    df["Stoch_D"] = stoch.stoch_signal()
+
+    # Volatility
+    bb = ta.volatility.BollingerBands(close, window=20, window_dev=2)
+    df["BB_Upper"] = bb.bollinger_hband()
+    df["BB_Mid"]   = bb.bollinger_mavg()
+    df["BB_Lower"] = bb.bollinger_lband()
+    df["BB_Width"] = bb.bollinger_wband()
+    df["ATR"]      = ta.volatility.average_true_range(high, low, close, window=14)
+
+    # Volume
+    df["OBV"]  = ta.volume.on_balance_volume(close, volume)
+    df["VWAP"] = ta.volume.volume_weighted_average_price(high, low, close, volume, window=14)
+
+    return df
+
+
+def screen(df: pd.DataFrame) -> dict[str, bool]:
+    """
+    Run boolean screening checks on the latest row of *df*.
+
+    Returns {signal_name: bool}. Call add_indicators(df) first.
+    """
+    last  = df.iloc[-1]
+    close = float(last["Close"])
+    return {
+        "RSI Oversold (<30)":          float(last["RSI"]) < 30,
+        "RSI Overbought (>70)":        float(last["RSI"]) > 70,
+        "Price > EMA 20":              close > float(last["EMA_20"]),
+        "Price > EMA 50":              close > float(last["EMA_50"]),
+        "Golden Cross (EMA20>EMA50)":  float(last["EMA_20"]) > float(last["EMA_50"]),
+        "Price > SMA 200":             close > float(last["SMA_200"]),
+        "MACD Bullish Crossover":      float(last["MACD"]) > float(last["MACD_Signal"]),
+        "BB Squeeze (Width<0.1)":      float(last["BB_Width"]) < 0.1,
+        "Price Near BB Lower (<2%)":   abs(close - float(last["BB_Lower"])) / close < 0.02,
+        "Stoch Oversold (K<20)":       float(last["Stoch_K"]) < 20,
+        "Stoch Overbought (K>80)":     float(last["Stoch_K"]) > 80,
+    }
+
+
+def latest_metrics(df: pd.DataFrame) -> dict:
+    """Return key indicator values from the last row as a flat dict."""
+    last = df.iloc[-1]
+    return {
+        "Close":    round(float(last["Close"]), 2),
+        "RSI":      round(float(last["RSI"]), 1),
+        "MACD":     round(float(last["MACD"]), 4),
+        "ATR":      round(float(last["ATR"]), 2),
+        "BB_Width": round(float(last["BB_Width"]), 4),
+        "OBV":      int(last["OBV"]),
+    }

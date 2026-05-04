@@ -2,7 +2,7 @@ name: Daily Stock Scan & Telegram Alert
 
 on:
   schedule:
-    - cron: '30 3 * * *'   # 03:30 UTC = 09:00 IST, Monday–Friday implicit via market hours
+    - cron: '30 3 * * 1-5'  # 03:30 UTC = 09:00 IST, Monday–Friday only (no weekend runs)
   workflow_dispatch:         # also triggerable manually from the GitHub Actions UI
 
 # Prevent a slow run from queuing another while still running

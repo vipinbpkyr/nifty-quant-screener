@@ -150,3 +150,55 @@ def fetch_batch_ohlcv(
                     pass
 
     return result
+
+
+# ── Single-ticker helpers (used by dashboard.py) ──────────────────────────────
+
+def fetch_ohlcv(
+    ticker: str,
+    period: str = "6mo",
+    interval: str = "1d",
+) -> pd.DataFrame:
+    """Return OHLCV DataFrame for a single *ticker*.
+
+    Raises ValueError when no data is returned (bad ticker / delisted).
+    Flattens MultiIndex columns produced by yfinance >= 0.2.x.
+    """
+    df = yf.download(ticker, period=period, interval=interval, progress=False, auto_adjust=True)
+    if df.empty:
+        raise ValueError(f"No data returned for ticker '{ticker}'.")
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+    df.index = pd.to_datetime(df.index)
+    return df
+
+
+def fetch_multiple(
+    tickers: list[str],
+    period: str = "6mo",
+    interval: str = "1d",
+) -> dict[str, pd.DataFrame]:
+    """Fetch OHLCV sequentially for a small list of tickers.
+
+    Returns a dict keyed by ticker; silently skips tickers with no data.
+    For large universes use fetch_batch_ohlcv instead.
+    """
+    result: dict[str, pd.DataFrame] = {}
+    for ticker in tickers:
+        try:
+            result[ticker] = fetch_ohlcv(ticker, period=period, interval=interval)
+        except ValueError:
+            pass
+    return result
+
+
+def get_info(ticker: str) -> dict:
+    """Return basic company metadata (name, sector, market cap)."""
+    info = yf.Ticker(ticker).info
+    return {
+        "name":       info.get("longName", ticker),
+        "sector":     info.get("sector", "N/A"),
+        "industry":   info.get("industry", "N/A"),
+        "market_cap": info.get("marketCap"),
+        "currency":   info.get("currency", "USD"),
+    }

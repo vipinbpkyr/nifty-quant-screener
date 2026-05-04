@@ -12,6 +12,23 @@ from plotly.subplots import make_subplots
 from data_engine import get_sp500_tickers, get_nifty500_tickers, fetch_batch_ohlcv
 from quant_logic import Screener, ScreenerConfig, Backtester
 
+# ── Cached data loaders ───────────────────────────────────────────────────────
+# Tickers change at most once a day; OHLCV is stale after ~4 hours intraday.
+# Caching here means repeated "Run Screener" clicks with different thresholds
+# (e.g. adjusting PE/RSI sliders) reuse the downloaded data instead of hitting
+# Yahoo Finance again.
+
+@st.cache_data(ttl="24h", show_spinner=False)
+def _load_tickers(market: str) -> list[str]:
+    return get_sp500_tickers() if market == "S&P 500" else get_nifty500_tickers()
+
+
+@st.cache_data(ttl="4h", show_spinner=False)
+def _load_ohlcv(market: str, period: str, chunk: int) -> dict:
+    tickers = _load_tickers(market)
+    return fetch_batch_ohlcv(tickers, period=period, chunk_size=chunk)
+
+
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="Quant Stock Screener",
@@ -85,11 +102,11 @@ backtester = Backtester(config)
 
 with st.status("Scanning…", expanded=True) as scan_status:
     st.write(f"⬇ Loading {market} constituent tickers…")
-    tickers = get_sp500_tickers() if market == "S&P 500" else get_nifty500_tickers()
+    tickers = _load_tickers(market)
     st.write(f"  ↳ {len(tickers)} tickers loaded.")
 
-    st.write(f"⬇ Downloading OHLCV data in chunks of {int(chunk_size)}…")
-    ohlcv = fetch_batch_ohlcv(tickers, period=period, chunk_size=int(chunk_size))
+    st.write(f"⬇ Downloading OHLCV data in chunks of {int(chunk_size)}… (cached for 4 h)")
+    ohlcv = _load_ohlcv(market, period, int(chunk_size))
     st.write(f"  ↳ {len(ohlcv)} tickers with valid data.")
 
     st.write("⚙ Pass 1 — RSI + Volume screen (vectorized)…")

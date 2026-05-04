@@ -9,8 +9,8 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-from data_provider import fetch_ohlcv, fetch_multiple, get_info
-from quant_engine import add_indicators, screen, latest_metrics
+from data_engine import fetch_ohlcv, fetch_multiple, get_info
+from quant_logic import add_indicators, screen, latest_metrics
 
 # ── Page config ──────────────────────────────────────────────────────────────
 st.set_page_config(page_title="Quant Screener", layout="wide", page_icon="📈")
